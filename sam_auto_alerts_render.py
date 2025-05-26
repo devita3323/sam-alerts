@@ -5,14 +5,17 @@ import smtplib
 from email.message import EmailMessage
 import os
 
-API_KEY = "NrJa4HrCopoLWrmIvc4s9hqhoYtJa8wnsB9ZscdT"
+# Use API key from env or fallback to hardcoded key
+API_KEY = os.getenv("SAM_API_KEY", "NrJa4HrCopoLWrmIvc4s9hqhoYtJa8wnsB9ZscdT")
 URL = "https://api.sam.gov/opportunities/v2/search"
-TO_EMAIL = "kyle.johnson@janesvillenissan.com"
-FROM_EMAIL = "kyledevita3323@gmail.com"
+TO_EMAIL = os.getenv("TO_EMAIL", "kyle.johnson@janesvillenissan.com")
+FROM_EMAIL = os.getenv("FROM_EMAIL", "kyledevita3323@gmail.com")
 APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
-REQUIRED = ["left-hand drive"]
-INCLUDE = ["sedan", "suv", "pickup", "mid-size truck"]
+# Filters
+STRICT_REQUIRED = ["left-hand drive"]
+STRICT_INCLUDE = ["sedan", "suv", "pickup", "mid-size truck"]
+BROAD_INCLUDE = ["passenger vehicle", "sedan", "suv", "pickup truck", "mid-size truck", "left-hand drive"]
 EXCLUDE = [
     "passenger van", "van", "minivan", "shuttle", "bus", "forklift", "pallet jack", "trailer",
     "atv", "utv", "heavy equipment", "excavator", "backhoe", "tractor", "sweeper", "loader",
@@ -20,50 +23,66 @@ EXCLUDE = [
     "crane", "tank", "right-hand drive"
 ]
 
-today = datetime.today()
-yesterday = today - timedelta(days=1)
-params = {
-    "api_key": API_KEY,
-    "postedFrom": yesterday.strftime("%m/%d/%Y"),
-    "postedTo": today.strftime("%m/%d/%Y"),
-    "limit": 1000
-}
+def is_valid(title, strict=True):
+    title = title.lower()
+    if any(exc in title for exc in EXCLUDE):
+        return False
+    if strict:
+        return any(req in title for req in STRICT_REQUIRED) and any(inc in title for inc in STRICT_INCLUDE)
+    else:
+        return any(inc in title for inc in BROAD_INCLUDE)
 
-response = requests.get(URL, params=params)
-data = response.json()
+def query_sam():
+    today = datetime.today()
+    yesterday = today - timedelta(days=1)
+    params = {
+        "api_key": API_KEY,
+        "postedFrom": yesterday.strftime("%m/%d/%Y"),
+        "postedTo": today.strftime("%m/%d/%Y"),
+        "limit": 1000
+    }
+    response = requests.get(URL, params=params)
+    return response.json().get("opportunitiesData", [])
 
-results = []
-for opp in data.get("opportunitiesData", []):
-    title = opp.get("title", "").lower()
-    if any(req in title for req in REQUIRED):
-        if any(inc in title for inc in INCLUDE):
-            if not any(exc in title for exc in EXCLUDE):
-                results.append({
-                    "Notice ID": opp.get("noticeId"),
-                    "Title": opp.get("title", ""),
-                    "Solicitation Number": opp.get("solicitationNumber", ""),
-                    "Posted": opp.get("postedDate", ""),
-                    "Due": opp.get("responseDeadLine", ""),
-                    "Agency": opp.get("departmentName", ""),
-                    "Link": f"https://sam.gov/opp/{opp.get('noticeId')}/view"
-                })
+def main():
+    history_file = "seen_opportunities.csv"
+    seen_ids = set()
 
-# Load or create history file
-history_file = "seen_opportunities.csv"
-seen_ids = set()
-if os.path.exists(history_file):
-    seen_df = pd.read_csv(history_file)
-    seen_ids = set(seen_df["Notice ID"].values)
+    if os.path.exists(history_file):
+        seen_df = pd.read_csv(history_file)
+        seen_ids = set(seen_df["Notice ID"].values)
 
-# Filter to only new entries
-new_results = [r for r in results if r["Notice ID"] not in seen_ids]
+    opps = query_sam()
+    new_results = []
 
-if new_results:
+    for opp in opps:
+        title = opp.get("title", "").lower()
+        notice_id = opp.get("noticeId")
+
+        if notice_id in seen_ids:
+            continue
+
+        if is_valid(title, strict=True) or is_valid(title, strict=False):
+            new_results.append({
+                "Notice ID": notice_id,
+                "Title": opp.get("title", ""),
+                "Solicitation Number": opp.get("solicitationNumber", ""),
+                "Posted": opp.get("postedDate", ""),
+                "Due": opp.get("responseDeadLine", ""),
+                "Agency": opp.get("departmentName", ""),
+                "Link": f"https://sam.gov/opp/{notice_id}/view"
+            })
+
+    if not new_results:
+        print("📭 No new results to send.")
+        return
+
     df_new = pd.DataFrame(new_results)
-    df_new.to_csv(f"sam_vehicle_opportunities_{today.strftime('%Y%m%d')}.csv", index=False)
+    today = datetime.today().strftime("%Y%m%d")
+    df_new.to_csv(f"sam_opps_{today}.csv", index=False)
 
-    # Update history
-    df_seen_new = pd.DataFrame(new_results)[["Notice ID"]]
+    # Update seen
+    df_seen_new = df_new[["Notice ID"]]
     if seen_ids:
         df_old = pd.read_csv(history_file)
         df_all = pd.concat([df_old, df_seen_new]).drop_duplicates()
@@ -71,14 +90,17 @@ if new_results:
         df_all = df_seen_new
     df_all.to_csv(history_file, index=False)
 
-    # Compose email
+    # Email message
     msg = EmailMessage()
     msg["Subject"] = f"🚨 {len(new_results)} New SAM.gov Vehicle Contracts"
     msg["From"] = FROM_EMAIL
     msg["To"] = TO_EMAIL
+
     body = "New vehicle-related opportunities:\n\n"
+
     for r in new_results:
         body += f"- {r['Title']}\n  Due: {r['Due']}\n  {r['Link']}\n\n"
+
     msg.set_content(body)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
@@ -86,5 +108,6 @@ if new_results:
         smtp.send_message(msg)
 
     print(f"✅ Sent {len(new_results)} new results to {TO_EMAIL}")
-else:
-    print("📭 No new results to send.")
+
+if __name__ == "__main__":
+    main()
