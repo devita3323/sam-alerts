@@ -1,0 +1,7 @@
+services:
+  - type: cron
+    name: samgov-alerts
+    schedule: "@hourly"
+    runtime: python
+    buildCommand: ""
+    startCommand: "python sam_auto_alerts_render.py"
