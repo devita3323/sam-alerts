@@ -34,13 +34,23 @@ def is_valid(title, strict=True):
 
 def query_sam():
     today = datetime.today()
-    yesterday = today - timedelta(days=1)
+
+    # Check if this is the first run (no history yet)
+    history_file = "seen_opportunities.csv"
+    if os.path.exists(history_file):
+        # Standard run: only grab the past 24 hours
+        posted_from = today - timedelta(days=1)
+    else:
+        # First run: go back to April 1st, 2025
+        posted_from = datetime(2025, 4, 1)
+
     params = {
         "api_key": API_KEY,
-        "postedFrom": yesterday.strftime("%m/%d/%Y"),
+        "postedFrom": posted_from.strftime("%m/%d/%Y"),
         "postedTo": today.strftime("%m/%d/%Y"),
         "limit": 1000
     }
+
     response = requests.get(URL, params=params)
     return response.json().get("opportunitiesData", [])
 
