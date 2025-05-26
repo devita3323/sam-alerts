@@ -76,15 +76,9 @@ if new_results:
     msg["Subject"] = f"🚨 {len(new_results)} New SAM.gov Vehicle Contracts"
     msg["From"] = FROM_EMAIL
     msg["To"] = TO_EMAIL
-    body = "New vehicle-related opportunities:
-
-"
+    body = "New vehicle-related opportunities:\n\n"
     for r in new_results:
-        body += f"- {r['Title']}
-  Due: {r['Due']}
-  {r['Link']}
-
-"
+        body += f"- {r['Title']}\n  Due: {r['Due']}\n  {r['Link']}\n\n"
     msg.set_content(body)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
